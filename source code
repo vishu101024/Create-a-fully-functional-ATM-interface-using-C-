@@ -1,0 +1,306 @@
+source code
+
+// atm.cpp
+// Simple ATM interface with file persistence.
+// Compile: g++ -std=c++17 atm.cpp -o atm
+// Run: ./atm  (or atm.exe on Windows)
+
+#include <bits/stdc++.h>
+using namespace std;
+using ll = long long;
+const string ACCOUNTS_FILE = "accounts.txt";
+const string TRANSACTIONS_FILE = "transactions.txt";
+const int MINI_STATEMENT_LIMIT = 5;
+
+struct Transaction {
+    string account_id;
+    string timestamp;
+    string type; // "DEPOSIT", "WITHDRAW", "TRANSFER"
+    double amount;
+    double balance_after;
+};
+
+struct Account {
+    string account_id;
+    string name;
+    string pin; // stored as plaintext for this simple project (NOT secure)
+    double balance;
+
+    Account() : balance(0.0) {}
+};
+
+string now_timestamp() {
+    auto t = chrono::system_clock::now();
+    time_t tt = chrono::system_clock::to_time_t(t);
+    char buf[64];
+    ctime_r(&tt, buf);
+    // remove trailing newline
+    string s(buf);
+    if (!s.empty() && s.back() == '\n') s.pop_back();
+    return s;
+}
+
+vector<string> split(const string &s, char delim) {
+    vector<string> out;
+    string cur;
+    for (char c : s) {
+        if (c == delim) { out.push_back(cur); cur.clear(); }
+        else cur.push_back(c);
+    }
+    out.push_back(cur);
+    return out;
+}
+
+void save_accounts(const vector<Account>& accounts) {
+    ofstream ofs(ACCOUNTS_FILE, ios::trunc);
+    if (!ofs) {
+        cerr << "Error: cannot open accounts file for writing\n";
+        return;
+    }
+    for (auto &a : accounts) {
+        // fields: account_id|name|pin|balance
+        ofs << a.account_id << '|' << a.name << '|' << a.pin << '|' << fixed << setprecision(2) << a.balance << '\n';
+    }
+}
+
+vector<Account> load_accounts() {
+    vector<Account> accounts;
+    ifstream ifs(ACCOUNTS_FILE);
+    if (!ifs) return accounts; // no file -> empty
+    string line;
+    while (getline(ifs, line)) {
+        if (line.empty()) continue;
+        auto parts = split(line, '|');
+        if (parts.size() != 4) continue;
+        Account a;
+        a.account_id = parts[0];
+        a.name = parts[1];
+        a.pin = parts[2];
+        try {
+            a.balance = stod(parts[3]);
+        } catch (...) { a.balance = 0.0; }
+        accounts.push_back(a);
+    }
+    return accounts;
+}
+
+void append_transaction(const Transaction &t) {
+    ofstream ofs(TRANSACTIONS_FILE, ios::app);
+    if (!ofs) {
+        cerr << "Error: cannot open transactions file for appending\n";
+        return;
+    }
+    // format: account_id|timestamp|type|amount|balance_after
+    ofs << t.account_id << '|' << t.timestamp << '|' << t.type << '|' 
+        << fixed << setprecision(2) << t.amount << '|' << t.balance_after << '\n';
+}
+
+vector<Transaction> load_transactions_for(const string &account_id) {
+    vector<Transaction> out;
+    ifstream ifs(TRANSACTIONS_FILE);
+    if (!ifs) return out;
+    string line;
+    while (getline(ifs, line)) {
+        if (line.empty()) continue;
+        auto p = split(line, '|');
+        if (p.size() != 5) continue;
+        if (p[0] != account_id) continue;
+        Transaction t;
+        t.account_id = p[0];
+        t.timestamp = p[1];
+        t.type = p[2];
+        try { t.amount = stod(p[3]); } catch(...) { t.amount = 0.0; }
+        try { t.balance_after = stod(p[4]); } catch(...) { t.balance_after = 0.0; }
+        out.push_back(t);
+    }
+    return out;
+}
+
+string gen_account_id(const vector<Account>& accounts) {
+    // simple incremental numeric id with leading zeros
+    int maxid = 1000;
+    for (auto &a : accounts) {
+        try {
+            int v = stoi(a.account_id);
+            if (v > maxid) maxid = v;
+        } catch (...) { }
+    }
+    return to_string(maxid + 1);
+}
+
+Account* find_account(vector<Account>& accounts, const string &account_id) {
+    for (auto &a : accounts) if (a.account_id == account_id) return &a;
+    return nullptr;
+}
+
+Account* authenticate(vector<Account>& accounts) {
+    cout << "\n--- User Login ---\n";
+    cout << "Enter Account ID: ";
+    string id; cin >> id;
+    Account* acc = find_account(accounts, id);
+    if (!acc) { cout << "Account not found.\n"; return nullptr; }
+    cout << "Enter 4-digit PIN: ";
+    string pin; cin >> pin;
+    if (pin == acc->pin) return acc;
+    cout << "Incorrect PIN.\n";
+    return nullptr;
+}
+
+void create_account(vector<Account>& accounts) {
+    cout << "\n--- Create New Account ---\n";
+    cin.ignore(numeric_limits<streamsize>::max(), '\n');
+    cout << "Enter name: ";
+    string name;
+    getline(cin, name);
+    string pin;
+    while (true) {
+        cout << "Enter 4-digit PIN: ";
+        cin >> pin;
+        if (pin.size() == 4 && all_of(pin.begin(), pin.end(), ::isdigit)) break;
+        cout << "PIN must be 4 digits.\n";
+    }
+    Account a;
+    a.account_id = gen_account_id(accounts);
+    a.name = name;
+    a.pin = pin;
+    a.balance = 0.0;
+    accounts.push_back(a);
+    save_accounts(accounts);
+    cout << "Account created. Your Account ID: " << a.account_id << "\n";
+    // initial transaction not created (balance 0)
+}
+
+void show_balance(Account &acc) {
+    cout << "\n--- Balance ---\n";
+    cout << "Account: " << acc.account_id << " | Name: " << acc.name << '\n';
+    cout << "Balance: Rs " << fixed << setprecision(2) << acc.balance << '\n';
+}
+
+void do_deposit(vector<Account>& accounts, Account &acc) {
+    cout << "\n--- Deposit ---\n";
+    cout << "Enter amount to deposit: Rs ";
+    double amt; cin >> amt;
+    if (amt <= 0) { cout << "Invalid amount.\n"; return; }
+    acc.balance += amt;
+    save_accounts(accounts);
+    Transaction t = {acc.account_id, now_timestamp(), "DEPOSIT", amt, acc.balance};
+    append_transaction(t);
+    cout << "Deposit successful. New balance: Rs " << fixed << setprecision(2) << acc.balance << '\n';
+}
+
+void do_withdraw(vector<Account>& accounts, Account &acc) {
+    cout << "\n--- Withdraw ---\n";
+    cout << "Enter amount to withdraw: Rs ";
+    double amt; cin >> amt;
+    if (amt <= 0) { cout << "Invalid amount.\n"; return; }
+    if (amt > acc.balance) { cout << "Insufficient funds.\n"; return; }
+    acc.balance -= amt;
+    save_accounts(accounts);
+    Transaction t = {acc.account_id, now_timestamp(), "WITHDRAW", amt, acc.balance};
+    append_transaction(t);
+    cout << "Withdrawal successful. New balance: Rs " << fixed << setprecision(2) << acc.balance << '\n';
+}
+
+void do_transfer(vector<Account>& accounts, Account &acc) {
+    cout << "\n--- Transfer ---\n";
+    cout << "Enter destination Account ID: ";
+    string toid; cin >> toid;
+    Account* dest = find_account(accounts, toid);
+    if (!dest) { cout << "Destination account not found.\n"; return; }
+    cout << "Enter amount to transfer: Rs ";
+    double amt; cin >> amt;
+    if (amt <= 0) { cout << "Invalid amount.\n"; return; }
+    if (amt > acc.balance) { cout << "Insufficient funds.\n"; return; }
+    acc.balance -= amt;
+    dest->balance += amt;
+    save_accounts(accounts);
+    Transaction t1 = {acc.account_id, now_timestamp(), "TRANSFER_OUT", amt, acc.balance};
+    Transaction t2 = {dest->account_id, now_timestamp(), "TRANSFER_IN", amt, dest->balance};
+    append_transaction(t1);
+    append_transaction(t2);
+    cout << "Transfer successful. Your new balance: Rs " << fixed << setprecision(2) << acc.balance << '\n';
+}
+
+void show_mini_statement(Account &acc) {
+    cout << "\n--- Mini Statement (last " << MINI_STATEMENT_LIMIT << ") ---\n";
+    auto txs = load_transactions_for(acc.account_id);
+    if (txs.empty()) { cout << "No transactions yet.\n"; return; }
+    int n = txs.size();
+    int start = max(0, n - MINI_STATEMENT_LIMIT);
+    for (int i = n-1; i >= start; --i) {
+        auto &t = txs[i];
+        cout << "[" << t.timestamp << "] " << t.type << " Rs " << fixed << setprecision(2) << t.amount 
+             << " | Bal: Rs " << t.balance_after << '\n';
+    }
+}
+
+void change_pin(vector<Account>& accounts, Account &acc) {
+    cout << "\n--- Change PIN ---\n";
+    cout << "Enter current PIN: ";
+    string cur; cin >> cur;
+    if (cur != acc.pin) { cout << "Incorrect current PIN.\n"; return; }
+    string np;
+    while (true) {
+        cout << "Enter new 4-digit PIN: ";
+        cin >> np;
+        if (np.size() == 4 && all_of(np.begin(), np.end(), ::isdigit)) break;
+        cout << "PIN must be 4 digits.\n";
+    }
+    acc.pin = np;
+    save_accounts(accounts);
+    cout << "PIN changed successfully.\n";
+}
+
+void user_menu(vector<Account>& accounts, Account &acc) {
+    while (true) {
+        cout << "\n--- ATM Menu ---\n";
+        cout << "1. Show Balance\n2. Deposit\n3. Withdraw\n4. Transfer\n5. Mini Statement\n6. Change PIN\n7. Logout\nChoose: ";
+        int ch; cin >> ch;
+        switch (ch) {
+            case 1: show_balance(acc); break;
+            case 2: do_deposit(accounts, acc); break;
+            case 3: do_withdraw(accounts, acc); break;
+            case 4: do_transfer(accounts, acc); break;
+            case 5: show_mini_statement(acc); break;
+            case 6: change_pin(accounts, acc); break;
+            case 7: cout << "Logging out...\n"; return;
+            default: cout << "Invalid choice.\n";
+        }
+    }
+}
+
+// Basic admin protected by admin PIN (hardcoded for this project)
+const string ADMIN_PIN = "9999";
+
+void admin_menu(const vector<Account>& accounts) {
+    cout << "\n--- Admin: View all accounts ---\n";
+    cout << "AccountID | Name | Balance\n";
+    for (auto &a : accounts) {
+        cout << a.account_id << " | " << a.name << " | Rs " << fixed << setprecision(2) << a.balance << '\n';
+    }
+}
+
+int main() {
+    cout << "=== Simple ATM Interface (C++) ===\n";
+    vector<Account> accounts = load_accounts();
+
+    while (true) {
+        cout << "\nMain Menu:\n1. Create Account\n2. Login\n3. Admin Login\n4. Exit\nChoose: ";
+        int opt; if (!(cin >> opt)) { cin.clear(); string junk; getline(cin, junk); continue; }
+        if (opt == 1) {
+            create_account(accounts);
+        } else if (opt == 2) {
+            Account* acc = authenticate(accounts);
+            if (acc) user_menu(accounts, *acc);
+        } else if (opt == 3) {
+            cout << "Enter admin PIN: ";
+            string pin; cin >> pin;
+            if (pin == ADMIN_PIN) admin_menu(accounts);
+            else cout << "Incorrect admin PIN.\n";
+        } else if (opt == 4) {
+            cout << "Exiting. Goodbye.\n";
+            break;
+        } else cout << "Invalid option.\n";
+    }
+    return 0;
+}
